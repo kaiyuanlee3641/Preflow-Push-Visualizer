@@ -1,299 +1,23 @@
 import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.widgets as widget
+import matplotlib.patches as mpatches
+import threading
 from networkx.algorithms.flow import preflow_push, build_residual_network
 
-# Source code for networkx.algorithms.flow.preflowpush:
-# https://networkx.org/documentation/stable/_modules/networkx/algorithms/flow/preflowpush.html 
+DEFAULT_NODE_COLOR = "#7dabf5"
+RED_NODE_COLOR = '#ff8375'
+GREEN_NODE_COLOR = '#5df252'
+YELLOW_NODE_COLOR = '#faea5f'
+WHITE_NODE_COLOR = '#a3a3a3'
 
-"""
-Highest-label preflow-push algorithm for maximum flow problems.
-"""
+animation_delay = 0.25
+is_running = False
+is_paused = False
+G = None
+edges = []
+pos = []
 
-from collections import deque
-from itertools import islice
-
-import networkx as nx
-
-from networkx.utils import arbitrary_element
-from networkx.algorithms.flow.utils import (
-    CurrentEdge,
-    GlobalRelabelThreshold,
-    Level,
-    build_residual_network,
-    detect_unboundedness,
-)
-
-__all__ = ["preflow_push"]
-
-
-def preflow_push_impl(G, s, t, capacity, residual, global_relabel_freq, value_only):
-    """Implementation of the highest-label preflow-push algorithm."""
-    if s not in G:
-        raise nx.NetworkXError(f"node {str(s)} not in graph")
-    if t not in G:
-        raise nx.NetworkXError(f"node {str(t)} not in graph")
-    if s == t:
-        raise nx.NetworkXError("source and sink are the same node")
-
-    if global_relabel_freq is None:
-        global_relabel_freq = 0
-    if global_relabel_freq < 0:
-        raise nx.NetworkXError("global_relabel_freq must be nonnegative.")
-
-    if residual is None:
-        R = build_residual_network(G, capacity)
-    else:
-        R = residual
-
-    detect_unboundedness(R, s, t)
-
-    R_nodes = R.nodes
-    R_pred = R.pred
-    R_succ = R.succ
-
-    # Initialize/reset the residual network.
-    for u in R:
-        R_nodes[u]["excess"] = 0
-        for e in R_succ[u].values():
-            e["flow"] = 0
-
-    def reverse_bfs(src):
-        """Perform a reverse breadth-first search from src in the residual
-        network.
-        """
-        heights = {src: 0}
-        q = deque([(src, 0)])
-        while q:
-            u, height = q.popleft()
-            height += 1
-            for v, attr in R_pred[u].items():
-                if v not in heights and attr["flow"] < attr["capacity"]:
-                    heights[v] = height
-                    q.append((v, height))
-        return heights
-
-    # Initialize heights of the nodes.
-    heights = reverse_bfs(t)
-
-    if s not in heights:
-        # t is not reachable from s in the residual network. The maximum flow
-        # must be zero.
-        R.graph["flow_value"] = 0
-        return R
-
-    n = len(R)
-    # max_height represents the height of the highest level below level n with
-    # at least one active node.
-    max_height = max(heights[u] for u in heights if u != s)
-    heights[s] = n
-
-    grt = GlobalRelabelThreshold(n, R.size(), global_relabel_freq)
-
-    # Initialize heights and 'current edge' data structures of the nodes.
-    for u in R:
-        R_nodes[u]["height"] = heights[u] if u in heights else n + 1
-        R_nodes[u]["curr_edge"] = CurrentEdge(R_succ[u])
-
-    def push(u, v, flow):
-        """Push flow units of flow from u to v."""
-        R_succ[u][v]["flow"] += flow
-        R_succ[v][u]["flow"] -= flow
-        R_nodes[u]["excess"] -= flow
-        R_nodes[v]["excess"] += flow
-
-    # The maximum flow must be nonzero now. Initialize the preflow by
-    # saturating all edges emanating from s.
-    for u, attr in R_succ[s].items():
-        flow = attr["capacity"]
-        if flow > 0:
-            push(s, u, flow)
-
-    # Partition nodes into levels.
-    levels = [Level() for i in range(2 * n)]
-    for u in R:
-        if u != s and u != t:
-            level = levels[R_nodes[u]["height"]]
-            if R_nodes[u]["excess"] > 0:
-                level.active.add(u)
-            else:
-                level.inactive.add(u)
-
-    def activate(v):
-        """Move a node from the inactive set to the active set of its level."""
-        if v != s and v != t:
-            level = levels[R_nodes[v]["height"]]
-            if v in level.inactive:
-                level.inactive.remove(v)
-                level.active.add(v)
-
-    def relabel(u):
-        """Relabel a node to create an admissible edge."""
-        grt.add_work(len(R_succ[u]))
-        return (
-            min(
-                R_nodes[v]["height"]
-                for v, attr in R_succ[u].items()
-                if attr["flow"] < attr["capacity"]
-            )
-            + 1
-        )
-
-    def discharge(u, is_phase1):
-        """Discharge a node until it becomes inactive or, during phase 1 (see
-        below), its height reaches at least n. The node is known to have the
-        largest height among active nodes.
-        """
-        height = R_nodes[u]["height"]
-        curr_edge = R_nodes[u]["curr_edge"]
-        # next_height represents the next height to examine after discharging
-        # the current node. During phase 1, it is capped to below n.
-        next_height = height
-        levels[height].active.remove(u)
-        while True:
-            v, attr = curr_edge.get()
-            if height == R_nodes[v]["height"] + 1 and attr["flow"] < attr["capacity"]:
-                flow = min(R_nodes[u]["excess"], attr["capacity"] - attr["flow"])
-                push(u, v, flow)
-                activate(v)
-                if R_nodes[u]["excess"] == 0:
-                    # The node has become inactive.
-                    levels[height].inactive.add(u)
-                    break
-            try:
-                curr_edge.move_to_next()
-            except StopIteration:
-                # We have run off the end of the adjacency list, and there can
-                # be no more admissible edges. Relabel the node to create one.
-                height = relabel(u)
-                if is_phase1 and height >= n - 1:
-                    # Although the node is still active, with a height at least
-                    # n - 1, it is now known to be on the s side of the minimum
-                    # s-t cut. Stop processing it until phase 2.
-                    levels[height].active.add(u)
-                    break
-                # The first relabel operation after global relabeling may not
-                # increase the height of the node since the 'current edge' data
-                # structure is not rewound. Use height instead of (height - 1)
-                # in case other active nodes at the same level are missed.
-                next_height = height
-        R_nodes[u]["height"] = height
-        return next_height
-
-    def gap_heuristic(height):
-        """Apply the gap heuristic."""
-        # Move all nodes at levels (height + 1) to max_height to level n + 1.
-        for level in islice(levels, height + 1, max_height + 1):
-            for u in level.active:
-                R_nodes[u]["height"] = n + 1
-            for u in level.inactive:
-                R_nodes[u]["height"] = n + 1
-            levels[n + 1].active.update(level.active)
-            level.active.clear()
-            levels[n + 1].inactive.update(level.inactive)
-            level.inactive.clear()
-
-    def global_relabel(from_sink):
-        """Apply the global relabeling heuristic."""
-        src = t if from_sink else s
-        heights = reverse_bfs(src)
-        if not from_sink:
-            # s must be reachable from t. Remove t explicitly.
-            del heights[t]
-        max_height = max(heights.values())
-        if from_sink:
-            # Also mark nodes from which t is unreachable for relabeling. This
-            # serves the same purpose as the gap heuristic.
-            for u in R:
-                if u not in heights and R_nodes[u]["height"] < n:
-                    heights[u] = n + 1
-        else:
-            # Shift the computed heights because the height of s is n.
-            for u in heights:
-                heights[u] += n
-            max_height += n
-        del heights[src]
-        for u, new_height in heights.items():
-            old_height = R_nodes[u]["height"]
-            if new_height != old_height:
-                if u in levels[old_height].active:
-                    levels[old_height].active.remove(u)
-                    levels[new_height].active.add(u)
-                else:
-                    levels[old_height].inactive.remove(u)
-                    levels[new_height].inactive.add(u)
-                R_nodes[u]["height"] = new_height
-        return max_height
-
-    # Phase 1: Find the maximum preflow by pushing as much flow as possible to
-    # t.
-
-    height = max_height
-    while height > 0:
-        # Discharge active nodes in the current level.
-        while True:
-            level = levels[height]
-            if not level.active:
-                # All active nodes in the current level have been discharged.
-                # Move to the next lower level.
-                height -= 1
-                break
-            # Record the old height and level for the gap heuristic.
-            old_height = height
-            old_level = level
-            u = arbitrary_element(level.active)
-            height = discharge(u, True)
-            if grt.is_reached():
-                # Global relabeling heuristic: Recompute the exact heights of
-                # all nodes.
-                height = global_relabel(True)
-                max_height = height
-                grt.clear_work()
-            elif not old_level.active and not old_level.inactive:
-                # Gap heuristic: If the level at old_height is empty (a 'gap'),
-                # a minimum cut has been identified. All nodes with heights
-                # above old_height can have their heights set to n + 1 and not
-                # be further processed before a maximum preflow is found.
-                gap_heuristic(old_height)
-                height = old_height - 1
-                max_height = height
-            else:
-                # Update the height of the highest level with at least one
-                # active node.
-                max_height = max(max_height, height)
-
-    # A maximum preflow has been found. The excess at t is the maximum flow
-    # value.
-    if value_only:
-        R.graph["flow_value"] = R_nodes[t]["excess"]
-        return R
-
-    # Phase 2: Convert the maximum preflow into a maximum flow by returning the
-    # excess to s.
-
-    # Relabel all nodes so that they have accurate heights.
-    height = global_relabel(False)
-    grt.clear_work()
-
-    # Continue to discharge the active nodes.
-    while height > n:
-        # Discharge active nodes in the current level.
-        while True:
-            level = levels[height]
-            if not level.active:
-                # All active nodes in the current level have been discharged.
-                # Move to the next lower level.
-                height -= 1
-                break
-            u = arbitrary_element(level.active)
-            height = discharge(u, False)
-            if grt.is_reached():
-                # Global relabeling heuristic.
-                height = global_relabel(False)
-                grt.clear_work()
-
-    R.graph["flow_value"] = R_nodes[t]["excess"]
-    return R
 
 def my_draw_networkx_edge_labels(
     G,
@@ -465,42 +189,226 @@ def my_draw_networkx_edge_labels(
 
     return text_items
 
+ev = threading.Event()
+
+def run(event):
+    global is_running
+    if is_running == True:
+        return
+    is_running = True
+    global G, ev
+    preflow_push_visualize(G, 's', 't', ev)
+    plt.show()
+
+def reset(event):
+    global is_running, res
+    ev.set()
+    plt.pause(0.1)
+    is_running = False
+    ax.cla()
+    excessax.cla()
+    excessax.axis('off')
+
+    ax.set_title('Maximum Flow Graph')
+
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_labels(res, pos=pos, ax=ax)
+    labels = nx.get_edge_attributes(res,'capacity')
+    # outlines = [plt.Circle(pos[node], 0.055, color='black') for node in res.nodes()]
+    # for p in outlines:
+    #     ax.add_patch(p)
+    # nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=labels, ax=netax)
+    draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
+
+    ev.clear()
+    plt.draw()
+
+def pause(event):
+    global is_paused
+    if is_paused:
+        is_paused = False
+    else:
+        is_paused = True
+
+def set_delay(event):
+    global animation_delay
+    global text_delay
+    delay = text_delay.text
+    if delay.replace('.', '', 1).isdigit() == False:
+        return
+    animation_delay = float(delay)
+    print(animation_delay)
+
+def set_example1(event):
+    global is_running
+    if is_running:
+        return
+    global G, pos, ax, netax, edges, res
+    edges = [('s', 1, {"capacity": 16}), ('s', 3, {"capacity": 13}), (1, 2, {"capacity": 12}), (3, 1, {"capacity": 4}),
+                (2, 3, {"capacity": 9}), (3, 4, {"capacity": 14}), (4, 2, {"capacity": 7}), (4, 't', {"capacity": 4}),
+                (2, 't', {"capacity": 4})]
+    G = nx.DiGraph()
+    G.add_nodes_from(['s', 't'])
+    G.add_edges_from(edges)
+    res = build_residual_network(G, capacity='capacity')
+    pos = nx.spring_layout(res, seed=5)
+
+    ax.cla()
+    netax.cla()
+    ax.set_title('Maximum Flow Graph')
+    netax.set_title('Original Network G')
+
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
+
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_labels(res, pos=pos, ax=ax)
+    draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
+        
+def set_example2(event):
+    global is_running
+    if is_running:
+        return
+    global G, pos, ax, netax, edges, res
+    edges = [('s', 1, {"capacity": 2}), ('s', 2, {"capacity": 1}), (1, 2, {"capacity": 3}), (1, 't', {"capacity": 1}),
+            (2, 't', {"capacity": 2})]
+    G = nx.DiGraph()
+    G.add_nodes_from(['s', 't'])
+    G.add_edges_from(edges)
+    res = build_residual_network(G, capacity='capacity')
+    pos = nx.spring_layout(res, seed=123771164)
+    
+    ax.cla()
+    netax.cla()
+    ax.set_title('Maximum Flow Graph')
+    netax.set_title('Original Network G')
+
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
+
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_labels(res, pos=pos, ax=ax)
+    draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
+
+def set_example3(event):
+    global is_running
+    if is_running:
+        return
+    global G, pos, ax, netax, edges, res
+    edges = [('s', 1, {"capacity": 23}), ('s', 2, {"capacity": 12}), (1, 2, {"capacity": 10}), (1, 't', {"capacity": 19}),
+            (2, 4, {"capacity": 3}), (3, 4, {"capacity": 14}), (4, 1, {"capacity": 6}), (5, 3, {"capacity": 28}), (1, 5, {"capacity": 4})]
+    G = nx.DiGraph()
+    G.add_nodes_from(['s', 't'])
+    G.add_edges_from(edges)
+    res = build_residual_network(G, capacity='capacity')
+    pos = nx.spring_layout(res, seed=46585)
+    
+    ax.cla()
+    netax.cla()
+    ax.set_title('Maximum Flow Graph')
+    netax.set_title('Original Network G')
+
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
+
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_labels(res, pos=pos, ax=ax)
+    draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
+
+def set_example4(event):
+    global is_running
+    if is_running:
+        return
+    global G, pos, ax, netax, edges, res
+    edges = [('s', 1, {"capacity": 23}), (1, 2, {"capacity": 14}), (2, 3, {"capacity": 52}), (3, 4, {"capacity": 9}), (4, 't', {"capacity": 18})]
+    G = nx.DiGraph()
+    G.add_nodes_from(['s', 't'])
+    G.add_edges_from(edges)
+    res = build_residual_network(G, capacity='capacity')
+    pos = nx.spring_layout(res, seed=3984561)
+
+    ax.cla()
+    netax.cla()
+    ax.set_title('Maximum Flow Graph')
+    netax.set_title('Original Network G')
+
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
+
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_labels(res, pos=pos, ax=ax)
+    draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
+
+fig, ax = plt.subplots()
+ax.axis('equal')
+fig.set_figwidth(15)
+fig.subplots_adjust(bottom=0.2, right=0.4, left=0.01)
+
+edges = [('s', 1, {"capacity": 16}), ('s', 3, {"capacity": 13}), (1, 2, {"capacity": 12}), (3, 1, {"capacity": 4}),
+            (2, 3, {"capacity": 9}), (3, 4, {"capacity": 14}), (4, 2, {"capacity": 7}), (4, 't', {"capacity": 4}),
+            (2, 't', {"capacity": 4})]
+G = nx.DiGraph()
+G.add_nodes_from(['s', 't'])
+G.add_edges_from(edges)
+# netax = fig.add_axes([0.41, 0.2, 0.38, 0.68])
+netax = fig.add_axes([0.61, 0.2, 0.38, 0.68])
+netax.axis('equal')
+# labelax = fig.add_axes([0.8, 0.2, 0.17, 0.68])
+labelax = fig.add_axes([0.41, 0.2, 0.17, 0.68])
+labelax.axis('equal')
+
+labelax.yaxis.tick_right()
+labelax.set_xticks([])
+labelax.set_yticks([1,10])
+
+excessax = fig.add_axes([0.01, 0.1, 0.2, 0.075])
+excessax.axis('off')
+
+ax.set_title('Maximum Flow Graph')
+netax.set_title('Original Network G')
+labelax.set_title('Heights')
+
+res = build_residual_network(G, capacity='capacity')
+pos = nx.spring_layout(res, seed=5)
+
 def animate_frame(wait=1, pre_animate=lambda:(), ax=None):
     ax.cla()
     pre_animate()
     plt.pause(wait)
     plt.draw()
 
-def draw_network_edges(G, zero=False, ax=None):
-    edge_capacities = nx.get_edge_attributes(G,'capacity')
-    edge_flows = nx.get_edge_attributes(G, 'flow')
+def draw_network_edges(M, zero=False, ax=None, label_size=10, Gpos=pos, label=True):
+    edge_capacities = nx.get_edge_attributes(M,'capacity')
+    edge_flows = nx.get_edge_attributes(M, 'flow')
     # print("Capacity:", edge_capacities)
     # print("Flow:", edge_flows)
 
     curved_edges = []
     straight_edges = []
+    # print(M.edges())
     if zero:
-        curved_edges = [edge for edge in G.edges() if (reversed(edge) in G.edges())]
-        straight_edges = list(set(G.edges()) - set(curved_edges))
+        curved_edges = [edge for edge in M.edges() if (reversed(edge) in M.edges())]
+        straight_edges = list(set(M.edges()) - set(curved_edges))
     else:
-        curved_edges = [edge for edge in G.edges() if ((reversed(edge) in G.edges()) and edge_capacities[edge] != 0 and edge_capacities[tuple(reversed(edge))] != 0)]
-        straight_edges = [edge for edge in list(set(res.edges()) - set(curved_edges)) if edge_capacities[edge] != 0]
+        curved_edges = [edge for edge in M.edges() if ((reversed(edge) in M.edges()) and edge_capacities[edge] != 0 and edge_capacities[tuple(reversed(edge))] != 0)]
+        straight_edges = [edge for edge in list(set(G.edges()) - set(curved_edges)) if edge_capacities[edge] != 0]
     # print("Curved:", curved_edges)
     # print("Straight:", straight_edges)
 
-    nx.draw_networkx_edges(G, pos, ax=ax, edgelist=straight_edges)
+    nx.draw_networkx_edges(M, Gpos, ax=ax, edgelist=straight_edges)
     arc_rad = 0.25
-    nx.draw_networkx_edges(G, pos, ax=ax, edgelist=curved_edges, connectionstyle=f'arc3, rad = {arc_rad}')
+    nx.draw_networkx_edges(M, Gpos, ax=ax, edgelist=curved_edges, connectionstyle=f'arc3, rad = {arc_rad}')
     # print(edge_flows)
 
-    if zero:
-        curved_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in curved_edges}
-        straight_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in straight_edges}
-    else:
-        curved_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in curved_edges if edge_capacities[edge] != 0}
-        straight_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in straight_edges if edge_capacities[edge] != 0}
-    my_draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=curved_edge_labels,rotate=False,rad=arc_rad)
-    nx.draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=straight_edge_labels,rotate=False)
+    if label == True:
+        if zero:
+            curved_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in curved_edges}
+            straight_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in straight_edges}
+        else:
+            curved_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in curved_edges if edge_capacities[edge] != 0}
+            straight_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in straight_edges if edge_capacities[edge] != 0}
+        my_draw_networkx_edge_labels(M, Gpos, ax=ax, edge_labels=curved_edge_labels,rotate=False,rad=arc_rad, font_size=label_size)
+        nx.draw_networkx_edge_labels(M, Gpos, ax=ax, edge_labels=straight_edge_labels,rotate=False, font_size=label_size)
     plt.draw()
 
 def update_network(G, zero=False, ax=None, new_attributes=dict()):
@@ -513,7 +421,82 @@ def update_network(G, zero=False, ax=None, new_attributes=dict()):
 
     draw_network_edges(G, ax=ax)
 
-def preflow_push_visualize(G, s, t):
+
+nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+# labels = nx.get_edge_attributes(G,'capacity')
+# nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=labels, ax=netax)
+draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
+
+nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+nx.draw_networkx_labels(res, pos=pos, ax=ax)
+# outlines = [plt.Circle(pos[node], 0.01+0.02*len(G.nodes()), color='black') for node in res.nodes()]
+# for p in outlines:
+#     ax.add_patch(p)
+# nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=labels, ax=netax)
+draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
+# print(res.edges())
+
+def preflow_push_visualize(G, s, t, ev):
+
+    def update():
+        ax.set_title('Maximum Flow Graph')
+        new_edge_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
+        nx.set_edge_attributes(res, new_edge_attributes)
+
+        
+        no_excess_nodes = [v for v in res_nodes if excess[v] == 0 or v == s or v == t]
+        black_nodes = list(set(res_nodes)-set(no_excess_nodes)-set(relabeling_nodes)-set(pushing_nodes)-({curr_node} if curr_node != None and curr_node not in relabeling_nodes else set()))
+        # print(black_nodes)
+        nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=black_nodes, node_color=DEFAULT_NODE_COLOR)
+        nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=no_excess_nodes, node_color=WHITE_NODE_COLOR)
+        nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=relabeling_nodes, node_color=RED_NODE_COLOR)
+        nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=pushing_nodes, node_color=GREEN_NODE_COLOR)
+        if curr_node != None and curr_node not in relabeling_nodes:
+            nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=[curr_node], node_color=YELLOW_NODE_COLOR)
+        nx.draw_networkx_labels(res, pos, ax=ax)
+
+        # new_node_attributes = {node: excess[node] for node in res_nodes}
+        # nx.draw_networkx_labels(res, {n:[pos[n][0]-0.05, pos[n][1]+0.05] for n in res_nodes}, labels=new_node_attributes, ax=ax, horizontalalignment='right')
+        # nx.set_node_attributes(res, new_node_attributes)
+
+        # outlines = [plt.Circle(pos[node], 0.01+0.02*len(G.nodes()), color='black') for node in res_nodes]
+        
+        # for p in outlines:
+        #     ax.add_patch(p)
+
+        labelax.cla()
+        labelax.set_title('Heights')
+        label_G = nx.DiGraph()
+        label_G.add_nodes_from([(n, {'height': height[n]}) for n in res_nodes])
+        label_G.add_edges_from(G_edges)
+        nx.set_edge_attributes(label_G, new_edge_attributes)
+        label_pos = {n: [pos[n][0], height[n]] for n in res_nodes}
+        node_list = [n for n in res_nodes]
+        node_list.sort(key=lambda n: pos[n][0])
+        x = -1
+        increment = 6/len(res_nodes)
+        for n in node_list:
+            label_pos[n] = [x, label_pos[n][1]]
+            x += increment
+
+        nx.draw_networkx_nodes(label_G, pos=label_pos, ax=labelax, node_color=DEFAULT_NODE_COLOR, node_size=1200/len(res_nodes))
+        nx.draw_networkx_labels(label_G, pos=label_pos, ax=labelax, font_size=70/len(res_nodes))
+        
+        draw_network_edges(label_G, Gpos=label_pos, ax=labelax, label=False)
+
+        # nx.draw_networkx_edges(label_G, label_pos, ax=labelax, edgelist=res_edges)
+        # print(pos)
+        # print(label_pos)
+
+        excessax.cla()
+        excessax.axis('off')
+        excessax.text(0, 0.5, 'excess: '+str({node: excess[node] for node in res_nodes}), fontsize=16)
+        excessax.text(0, -0.3, 'height: '+str({node: height[node] for node in res_nodes}), fontsize=16)
+        # excessax.text(0, -0.3, 'delay: '+str(animation_delay), fontsize=10)
+        draw_network_edges(res, ax=ax, Gpos=pos, label_size=8)
+
+    global is_running, is_paused, animation_delay
+
     res = build_residual_network(G, capacity='capacity')
 
     G_edges = G.edges()
@@ -523,23 +506,30 @@ def preflow_push_visualize(G, s, t):
 
     forward_edges = [e for e in res.edges() if e in G_edges]
     backward_edges = list(set(res_edges) - set(forward_edges))
-    print("Forward:", forward_edges)
-    print("Backward:", backward_edges)
+    # print("Forward:", forward_edges)
+    # print("Backward:", backward_edges)
 
     n = len(res_nodes)
     height = {s: n}
     capacity = nx.get_edge_attributes(res, 'capacity')
     res_capacity = capacity.copy()
     capacity = {e: capacity[e] if capacity[e] != 0 else capacity[tuple(reversed(e))] for e in res_edges}
-    print(capacity)
     flow = dict()
     excess = {v: 0 for v in res_nodes}
 
+    relabeling_nodes = []
+    pushing_nodes = []
+    curr_node = None
+
     def push(v, w, e, amount):
+        while is_paused:
+            plt.pause(1)
+
         flow[e] += amount
         flow[tuple(reversed(e))] -= amount
         excess[v] -= amount
         excess[w] += amount
+        
 
     def calculate_excess(v):
         ex = sum(flow[edge] if edge[1] == v else -flow[edge] if edge[0] == v else 0 for edge in res_edges)
@@ -553,11 +543,19 @@ def preflow_push_visualize(G, s, t):
             height[v] = 0
         excess[v] = calculate_excess(v)
 
+    # Begin animation
+    animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
+
     push_edges = forward_edges.copy()
+    curr_node = s
     for e in res_edges:
+        if ev.is_set() or is_running == False:
+            excessax.cla()
+            return
         if e[0] == s:
             # Saturate all edges from s
             # flow[e] = capacity[e]
+            pushing_nodes.append(e[1])
             reversed_edge = tuple(reversed(e))
             push(s, e[1], e, capacity[e])
             if flow[e] == capacity[e] and e in push_edges:
@@ -568,38 +566,52 @@ def preflow_push_visualize(G, s, t):
                 push_edges.append(e)
             if flow[reversed_edge] < 0 and reversed_edge not in push_edges:
                 push_edges.append(reversed_edge)
+            animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
+            pushing_nodes.remove(e[1])
     
     def relabel(v):
+        while is_paused:
+            plt.pause(1)
+        animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
+        relabeling_nodes.append(v)
         height[v] += 1
+        animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
+        relabeling_nodes.remove(v)
         # animate_frame()
 
-    print("Heights:", height)
-    print("Capacity:", capacity)
-    print("Flow:", flow)
-    print("Excess:", excess)
-
-    excessax = fig.add_axes([0.01, 0.1, 0.2, 0.075])
+    # print("Heights:", height)
+    # print("Capacity:", capacity)
+    # print("Flow:", flow)
+    # print("Excess:", excess)
 
     # excess[v] = flow[into v] - flow[out of v]
     r = [v for (v, ex) in excess.items() if ex > 0 and v != s and v != t]
-    i = 0
-    while len(r) > 0 and i < 1000:
+    # i = 0
+    while len(r) > 0:
+        if ev.is_set() or is_running == False:
+            excessax.cla()
+            return
         # print(excess)
         v = r.pop(0)
+        
+        curr_node = v
         v_edges = [e for e in push_edges if e[0] == v and height[v] > height[e[1]]]
         # print(v_edges)
         pushed_flow = False
+        visited = False
         for e in v_edges:
             if excess[v] == 0:
                 break
             w = e[1]
-            print(e, "-", str(flow[e]) + "/" + str(capacity[e]), "| height[v] = " + str(height[v]) + " - height[w] = " + str(height[w]))
+            # print(e, "-", str(flow[e]) + "/" + str(capacity[e]), "| height[v] = " + str(height[v]) + " - height[w] = " + str(height[w]))
+            # if (height[v] == height[w] + 1 or height[v] == height[w]) and flow[e] < capacity[e]:
             if height[v] == height[w] + 1 and flow[e] < capacity[e]:
+                pushing_nodes.append(w)
                 reversed_edge = tuple(reversed(e))
                 max_possible = min(excess[v], capacity[e] - flow[e] if e in forward_edges else -flow[e])
-                print("> Pushed", max_possible, "flow through", e, "("+(str(capacity[e])+"-"+str(flow[e]) if e in forward_edges else str(-flow[e])) +")")
-                print("Flow", e, "=", flow[e], "| Flow", reversed_edge, "=", flow[reversed_edge])
-                print("Excess", v, "=", excess[v], "| Excess", w, "=", excess[w])
+                # print("> Pushed", max_possible, "flow through", e, "("+(str(capacity[e])+"-"+str(flow[e]) if e in forward_edges else str(-flow[e])) +")")
+                # print("Flow", e, "=", flow[e], "| Flow", reversed_edge, "=", flow[reversed_edge])
+                # print("Excess", v, "=", excess[v], "| Excess", w, "=", excess[w])
                 # flow[tuple(reversed(e))] += max_possible
                 # flow[e] = capacity[e] - flow[tuple(reversed(e))]
 
@@ -620,209 +632,98 @@ def preflow_push_visualize(G, s, t):
                 if flow[reversed_edge] < 0 and reversed_edge not in push_edges:
                     push_edges.append(reversed_edge)
 
-                if excess[w] > 0 and w != t:
+                if excess[w] > 0 and w != t and w not in r:
                     r.append(w)
-                print("New flow", e, "=", flow[e], "| New flow", reversed_edge, "=", flow[reversed_edge])
-                print("New excess", v, "=", excess[v], "| New excess", w, "=", excess[w])
+                # print("New flow", e, "=", flow[e], "| New flow", reversed_edge, "=", flow[reversed_edge])
+                # print("New excess", v, "=", excess[v], "| New excess", w, "=", excess[w])
                 
-                # if e in forward_edges:
-                #     max_possible = min(excess[v], capacity[e] - flow[e])
-                #     print("> Pushed", max_possible, "flow through", e)
-                #     print("Flow", e, "=", flow[e], "| Flow", tuple(reversed(e)), "=", flow[tuple(reversed(e))])
-                #     # flow[tuple(reversed(e))] += max_possible
-                #     # flow[e] = capacity[e] - flow[tuple(reversed(e))]
-                #     flow[tuple(reversed(e))] -= max_possible
-                #     flow[e] += max_possible
-                #     excess[v] -= max_possible
-                #     excess[w] += max_possible
-
-                #     if flow[e] == 0:
-                #         push_edges.remove(e)
-                #     if flow[tuple(reversed(e))] > 0:
-                #         push_edges.append(tuple(reversed(e)))
-
-                #     if w != t:
-                #         r.append(w)
-                #     print("New flow:", flow[e])
-                #     print("New flow of backedge:", flow[tuple(reversed(e))])
-                #     print("New excess:", excess[v])
-                # else:
-                #     max_possible = min(excess[v], flow[e])
-                #     print("> Decreased", max_possible, "flow through", e)
-                #     # flow[e] -= max_possible
-                #     # flow[tuple(reversed(e))] = capacity[e] - flow[e]
-                #     flow[e] += max_possible
-                #     flow[tuple(reversed(e))] -= max_possible
-                #     excess[v] -= max_possible
-                #     excess[w] += max_possible
-
-                #     if flow[e] == 0:
-                #         push_edges.remove(e)
-                #     if flow[tuple(reversed(e))] > 0:
-                #         push_edges.append(tuple(reversed(e)))
-
-                #     if w != t:
-                #         r.append(v)
-                #     print("New flow:", flow[tuple(reversed(e))])
-                #     print("New excess:", excess[v])
                 pushed_flow = True
-
-                def update():
-                    new_edge_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
-                    nx.set_edge_attributes(res, new_edge_attributes)
-
-                    pos = nx.spring_layout(res, seed=5)
-                    nx.draw_networkx_nodes(res, pos, ax=ax)
-                    nx.draw_networkx_labels(res, pos, ax=ax)
-
-                    # new_node_attributes = {node: excess[node] for node in res_nodes}
-                    # nx.draw_networkx_labels(res, {n:[pos[n][0]-0.05, pos[n][1]+0.05] for n in res_nodes}, labels=new_node_attributes, ax=ax, horizontalalignment='right')
-                    # nx.set_node_attributes(res, new_node_attributes)
-
-                    excessax.cla()
-                    excessax.axis('off')
-                    excessax.text(0, 0.4, 'excess: '+str({node: excess[node] for node in res_nodes}))
-                    excessax.text(0, -0.1, 'height: '+str({node: height[node] for node in res_nodes}))
-
-                    draw_network_edges(res, ax=ax)
-                animate_frame(wait=0.25, pre_animate=update, ax=ax)
-        if len(r) == 0 and v != t and excess[v] > 0:
+                animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
+                pushing_nodes.remove(w)
+                visited = True
+        # if len(r) == 0 and v != t and excess[v] > 0:
+        if len(r) == 0:
             r = [v for (v, ex) in excess.items() if ex > 0 and v != s and v != t]
+            if len(r) == 0:
+                break
             v = r.pop()
+            curr_node = v
             relabel(v)
             r.insert(0, v)
-            print("Relabeling", v, "to height", height[v])
+            visited = True
+            # print("Relabeling", v, "to height", height[v])
+        
+        # if visited == False:
+        #    r.insert(len(r), v)
+
         # print(r)
         # print("Heights:", height)
         # print("Capacity:", capacity)
         # print("Flow:", flow)
         # print("Excess:", excess)
         # r = 
-        i += 1
-
+        # i += 1
+    
+    print(r)
 
     print("Heights:", height)
     print("Capacity:", capacity)
     print("Flow:", flow)
     print("Excess:", excess)
 
+    # new_edge_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
+    # netax.cla()
+    # netax.set_title('Original Network G')   
+    # nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    # nx.set_edge_attributes(G, new_edge_attributes)
+    # draw_network_edges(G, ax=netax, label_size=8)
+
     print("Algorithm Complete")
 
-    new_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
-    # print(new_attributes)
-    nx.set_edge_attributes(res, new_attributes)
+    # animate_frame(wait=0, pre_animate=update, ax=ax)
+    is_running = False
 
-    pos = nx.spring_layout(res, seed=5)
-    nx.draw_networkx_nodes(res, pos, ax=ax)
-    nx.draw_networkx_labels(res, pos, ax=ax)
-
-    draw_network_edges(res, ax=ax)
-    plt.draw()
-    
-    
-
-
-def reset(event):
+    ax.cla()
+    new_edge_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
+    ax.set_title('Maximum Flow Graph')   
+    nx.draw_networkx(G, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.set_edge_attributes(G, new_edge_attributes)
+    draw_network_edges(G, ax=ax, Gpos=pos, label_size=8)
     plt.draw()
 
+# pfp = preflow_push(G, 's', 't')
+# nx.draw_networkx_nodes(pfp, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+# nx.draw_networkx_labels(pfp, pos=pos, ax=netax)
+# draw_network_edges(pfp, ax=netax, zero=False, label_size=8)
 
-
-fig, ax = plt.subplots()
-fig.set_figwidth(10)
-fig.subplots_adjust(bottom=0.2, right=0.5, left=0.01)
 menu_start_x = 0.4
-axrun = fig.add_axes([menu_start_x+0.44, 0.1, 0.1, 0.075])
-axreset = fig.add_axes([menu_start_x+0.33, 0.1, 0.1, 0.075])
-axstep = fig.add_axes([menu_start_x+0.22, 0.1, 0.1, 0.075])
-axbox = fig.add_axes([menu_start_x, 0.1, 0.2, 0.075])
+axrun = fig.add_axes([menu_start_x, 0.1, 0.1, 0.075])
+axreset = fig.add_axes([menu_start_x+0.11, 0.1, 0.1, 0.075])
+axpause = fig.add_axes([menu_start_x+0.22, 0.1, 0.1, 0.075])
+axex1 = fig.add_axes([menu_start_x, 0.03, 0.025, 0.05])
+axex2 = fig.add_axes([menu_start_x+0.03, 0.03, 0.025, 0.05])
+axex3 = fig.add_axes([menu_start_x+0.03*2, 0.03, 0.025, 0.05])
+axex4 = fig.add_axes([menu_start_x+0.03*3, 0.03, 0.025, 0.05])
+# axrun = fig.add_axes([menu_start_x+0.44, 0.1, 0.1, 0.075])
+# axreset = fig.add_axes([menu_start_x+0.33, 0.1, 0.1, 0.075])
+# axstep = fig.add_axes([menu_start_x+0.22, 0.1, 0.1, 0.075])
+axbox = fig.add_axes([menu_start_x+0.44, 0.1, 0.1, 0.075])
 brun = widget.Button(axrun, 'Run')
 breset = widget.Button(axreset, 'Reset')
-bstep = widget.Button(axstep, 'Step')
-text_delay = widget.TextBox(axbox, "Delay")
+bpause = widget.Button(axpause, 'Pause')
+bex1 = widget.Button(axex1, 'Ex1')
+bex2 = widget.Button(axex2, 'Ex2')
+bex3 = widget.Button(axex3, 'Ex3')
+bex4 = widget.Button(axex4, 'Ex4')
+# bstep = widget.Button(axstep, 'Step')
+text_delay = widget.TextBox(axbox, "Delay", initial=animation_delay)
 
 breset.on_clicked(reset)
-
-
-
-edges = [('s', 1, {"capacity": 16}), ('s', 3, {"capacity": 13}), (1, 2, {"capacity": 12}), (3, 1, {"capacity": 4}),
-            (2, 3, {"capacity": 9}), (3, 4, {"capacity": 14}), (4, 2, {"capacity": 7}), (4, 't', {"capacity": 4}),
-            (4, 't', {"capacity": 4})]
-G = nx.DiGraph()
-G.add_nodes_from(['s', 't'])
-netax = fig.add_axes([0.51, 0.2, 0.48, 0.68])
-# edges.append((3, 1))
-# edges.append((2, 4))
-# edges.append(('s', 2))
-# edges.append((1, 't'))
-# edges.append((4, 1))
-# edges.append((2, 3))
-
-G.add_edges_from(edges)
-# pos = nx.spring_layout(G)
-# nx.draw_networkx(G, pos=pos, ax=ax)
-# labels = nx.get_edge_attributes(G,'capacity')
-# nx.draw_networkx_edge_labels(G,pos,edge_labels=labels, ax=ax)
-
-
-# Drawing multiple edges between two nodes with networkx
-# https://stackoverflow.com/questions/22785849/drawing-multiple-edges-between-two-nodes-with-networkx
-# res = preflow_push(build_residual_network(G, capacity='capacity'), 's', 't')
-res = build_residual_network(G, capacity='capacity')
-pos = nx.spring_layout(res, seed=5)
-
-# Draw original network G
-netax.set_title('Original Network G')
-# nx.draw_networkx(G, pos, ax=netax)
-# network_capacity = nx.get_edge_attributes(G, "capacity")
-# network_capacity = {edge: '0/' + str(network_capacity[edge]) for edge in G.edges() if network_capacity[edge] != 0}
-# nx.draw_networkx_edge_labels(G, pos, edge_labels=network_capacity, rotate=False)
-res = preflow_push(G, 's', 't')
-
-
-
-nx.draw_networkx_nodes(res, pos, ax=netax)
-nx.draw_networkx_labels(res, pos, ax=netax)
-draw_network_edges(res, ax=netax)
-
-ax.set_title('Maximum Flow Graph')
-# nx.draw_networkx_nodes(res, pos, ax=ax)
-# nx.draw_networkx_labels(res, pos, ax=ax)
-
-
-# edge_capacities = nx.get_edge_attributes(res,'capacity')
-# edge_flows = nx.get_edge_attributes(res, 'flow')
-# print(edge_capacities, edge_flows)
-
-# curved_edges = [edge for edge in res.edges() if ((reversed(edge) in res.edges()) and edge_capacities[edge] != 0 and edge_capacities[tuple(reversed(edge))] != 0)]
-# # curved_edges = [edge for edge in res.edges() if (reversed(edge) in res.edges())]
-# straight_edges = [edge for edge in list(set(res.edges()) - set(curved_edges)) if edge_capacities[edge] != 0]
-# print(curved_edges, straight_edges)
-
-
-# nx.draw_networkx_edges(res, pos, ax=ax, edgelist=straight_edges)
-# arc_rad = 0.25
-# nx.draw_networkx_edges(res, pos, ax=ax, edgelist=curved_edges, connectionstyle=f'arc3, rad = {arc_rad}')
-# # print(edge_flows)
-# # curved_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in curved_edges}
-# # straight_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in straight_edges}
-# curved_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in curved_edges if edge_capacities[edge] != 0}
-# straight_edge_labels = {edge: str(0 if edge_flows.get(edge) == None else edge_flows.get(edge)) + '/' + str(edge_capacities[edge]) for edge in straight_edges if edge_capacities[edge] != 0}
-# my_draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=curved_edge_labels,rotate=False,rad=arc_rad)
-# nx.draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=straight_edge_labels,rotate=False)
-
-
-preflow_push_visualize(G, 's', 't')
-# fig.savefig("3.png", bbox_inches='tight',pad_inches=0)
-# flow_label = nx.get_edge_attributes(res, 'flow')
-# capacity_label = nx.get_edge_attributes(res, 'capacity')
-# formatted_edge_labels = {(elem[0],elem[1]):capacity_label[elem] for elem in capacity_label if capacity_label[elem] != 0}
-# print(formatted_edge_labels)
-# edge_labels = my_draw_networkx_edge_labels(res,pos,edge_labels=formatted_edge_labels, ax=ax, font_size=10)
-
-# R = preflow_push_impl(G, 's', 't', capacity='capacity', residual=None, global_relabel_freq=1, value_only=False)
-# R.graph["algorithm"] = "preflow_push"
-# pos = nx.spring_layout(R)
-# labels = nx.get_edge_attributes(R,'flow')
-# nx.draw_networkx(R, ax=ax)
-# nx.draw_networkx_edge_labels(R,pos,edge_labels=labels, ax=ax)
+brun.on_clicked(run)
+bpause.on_clicked(pause)
+text_delay.on_submit(set_delay)
+bex1.on_clicked(set_example1)
+bex2.on_clicked(set_example2)
+bex3.on_clicked(set_example3)
+bex4.on_clicked(set_example4)
 plt.show()
