@@ -209,6 +209,12 @@ def reset(event):
     excessax.cla()
     excessax.axis('off')
 
+    labelax.cla()
+    labelax.set_title('Heights')
+    labelax.yaxis.tick_right()
+    labelax.set_xticks([])
+    labelax.set_yticks([1,10])
+
     ax.set_title('Maximum Flow Graph')
 
     nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
