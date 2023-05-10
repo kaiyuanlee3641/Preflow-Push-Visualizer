@@ -5,11 +5,12 @@ import matplotlib.patches as mpatches
 import threading
 from networkx.algorithms.flow import preflow_push, build_residual_network
 
-DEFAULT_NODE_COLOR = "#7dabf5"
+BLUE_NODE_COLOR = "#5696fc"
 RED_NODE_COLOR = '#ff8375'
 GREEN_NODE_COLOR = '#5df252'
 YELLOW_NODE_COLOR = '#faea5f'
 WHITE_NODE_COLOR = '#a3a3a3'
+EXCESS_NODE_COLOR = '#00eaff'
 
 animation_delay = 0.25
 is_running = False
@@ -18,7 +19,8 @@ G = None
 edges = []
 pos = []
 
-
+# Curved edges implementation from
+# https://stackoverflow.com/questions/22785849/drawing-multiple-edges-between-two-nodes-with-networkx
 def my_draw_networkx_edge_labels(
     G,
     pos,
@@ -196,12 +198,14 @@ def run(event):
     if is_running == True:
         return
     is_running = True
+    is_paused = False
     global G, ev
     preflow_push_visualize(G, 's', 't', ev)
     plt.show()
 
 def reset(event):
-    global is_running, res
+    global is_running, is_paused, res
+    is_paused = False
     ev.set()
     plt.pause(0.1)
     is_running = False
@@ -213,11 +217,11 @@ def reset(event):
     labelax.set_title('Heights')
     labelax.yaxis.tick_right()
     labelax.set_xticks([])
-    labelax.set_yticks([1,10])
+    labelax.set_yticks([])
 
     ax.set_title('Maximum Flow Graph')
 
-    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
     nx.draw_networkx_labels(res, pos=pos, ax=ax)
     labels = nx.get_edge_attributes(res,'capacity')
     # outlines = [plt.Circle(pos[node], 0.055, color='black') for node in res.nodes()]
@@ -231,10 +235,7 @@ def reset(event):
 
 def pause(event):
     global is_paused
-    if is_paused:
-        is_paused = False
-    else:
-        is_paused = True
+    is_paused = not is_paused
 
 def set_delay(event):
     global animation_delay
@@ -264,10 +265,10 @@ def set_example1(event):
     ax.set_title('Maximum Flow Graph')
     netax.set_title('Original Network G')
 
-    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=BLUE_NODE_COLOR, node_size=320)
     draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
 
-    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
     nx.draw_networkx_labels(res, pos=pos, ax=ax)
     draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
         
@@ -289,10 +290,10 @@ def set_example2(event):
     ax.set_title('Maximum Flow Graph')
     netax.set_title('Original Network G')
 
-    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=BLUE_NODE_COLOR, node_size=320)
     draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
 
-    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
     nx.draw_networkx_labels(res, pos=pos, ax=ax)
     draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
 
@@ -314,10 +315,10 @@ def set_example3(event):
     ax.set_title('Maximum Flow Graph')
     netax.set_title('Original Network G')
 
-    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=BLUE_NODE_COLOR, node_size=320)
     draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
 
-    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
     nx.draw_networkx_labels(res, pos=pos, ax=ax)
     draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
 
@@ -338,10 +339,10 @@ def set_example4(event):
     ax.set_title('Maximum Flow Graph')
     netax.set_title('Original Network G')
 
-    nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx(G, pos=pos, ax=netax, node_color=BLUE_NODE_COLOR, node_size=320)
     draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
 
-    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
     nx.draw_networkx_labels(res, pos=pos, ax=ax)
     draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
 
@@ -356,18 +357,16 @@ edges = [('s', 1, {"capacity": 16}), ('s', 3, {"capacity": 13}), (1, 2, {"capaci
 G = nx.DiGraph()
 G.add_nodes_from(['s', 't'])
 G.add_edges_from(edges)
-# netax = fig.add_axes([0.41, 0.2, 0.38, 0.68])
 netax = fig.add_axes([0.61, 0.2, 0.38, 0.68])
 netax.axis('equal')
-# labelax = fig.add_axes([0.8, 0.2, 0.17, 0.68])
 labelax = fig.add_axes([0.41, 0.2, 0.17, 0.68])
 labelax.axis('equal')
 
 labelax.yaxis.tick_right()
 labelax.set_xticks([])
-labelax.set_yticks([1,10])
+labelax.set_yticks([])
 
-excessax = fig.add_axes([0.01, 0.1, 0.2, 0.075])
+excessax = fig.add_axes([0.4, 0.1, 0.2, 0.075])
 excessax.axis('off')
 
 ax.set_title('Maximum Flow Graph')
@@ -391,7 +390,6 @@ def draw_network_edges(M, zero=False, ax=None, label_size=10, Gpos=pos, label=Tr
 
     curved_edges = []
     straight_edges = []
-    # print(M.edges())
     if zero:
         curved_edges = [edge for edge in M.edges() if (reversed(edge) in M.edges())]
         straight_edges = list(set(M.edges()) - set(curved_edges))
@@ -404,7 +402,6 @@ def draw_network_edges(M, zero=False, ax=None, label_size=10, Gpos=pos, label=Tr
     nx.draw_networkx_edges(M, Gpos, ax=ax, edgelist=straight_edges)
     arc_rad = 0.25
     nx.draw_networkx_edges(M, Gpos, ax=ax, edgelist=curved_edges, connectionstyle=f'arc3, rad = {arc_rad}')
-    # print(edge_flows)
 
     if label == True:
         if zero:
@@ -417,30 +414,12 @@ def draw_network_edges(M, zero=False, ax=None, label_size=10, Gpos=pos, label=Tr
         nx.draw_networkx_edge_labels(M, Gpos, ax=ax, edge_labels=straight_edge_labels,rotate=False, font_size=label_size)
     plt.draw()
 
-def update_network(G, zero=False, ax=None, new_attributes=dict()):
-    # print(new_attributes)
-    nx.set_edge_attributes(G, new_attributes)
-
-    pos = nx.spring_layout(G, seed=5)
-    nx.draw_networkx_nodes(G, pos, ax=ax)
-    nx.draw_networkx_labels(G, pos, ax=ax)
-
-    draw_network_edges(G, ax=ax)
-
-
-nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
-# labels = nx.get_edge_attributes(G,'capacity')
-# nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=labels, ax=netax)
+nx.draw_networkx(G, pos=pos, ax=netax, node_color=BLUE_NODE_COLOR, node_size=320)
 draw_network_edges(G, ax=netax, Gpos=pos, label_size=8)
 
-nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+nx.draw_networkx_nodes(res, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
 nx.draw_networkx_labels(res, pos=pos, ax=ax)
-# outlines = [plt.Circle(pos[node], 0.01+0.02*len(G.nodes()), color='black') for node in res.nodes()]
-# for p in outlines:
-#     ax.add_patch(p)
-# nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=labels, ax=netax)
 draw_network_edges(res, ax=ax, Gpos=pos, zero=True, label_size=8)
-# print(res.edges())
 
 def preflow_push_visualize(G, s, t, ev):
 
@@ -451,24 +430,14 @@ def preflow_push_visualize(G, s, t, ev):
 
         
         no_excess_nodes = [v for v in res_nodes if excess[v] == 0 or v == s or v == t]
-        black_nodes = list(set(res_nodes)-set(no_excess_nodes)-set(relabeling_nodes)-set(pushing_nodes)-({curr_node} if curr_node != None and curr_node not in relabeling_nodes else set()))
-        # print(black_nodes)
-        nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=black_nodes, node_color=DEFAULT_NODE_COLOR)
+        excess_nodes = list(set(res_nodes)-set(no_excess_nodes)-set(relabeling_nodes)-set(pushing_nodes)-({curr_node} if curr_node != None and curr_node not in relabeling_nodes else set()))
+        nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=excess_nodes, node_color=EXCESS_NODE_COLOR)
         nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=no_excess_nodes, node_color=WHITE_NODE_COLOR)
         nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=relabeling_nodes, node_color=RED_NODE_COLOR)
         nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=pushing_nodes, node_color=GREEN_NODE_COLOR)
         if curr_node != None and curr_node not in relabeling_nodes:
             nx.draw_networkx_nodes(res, pos, ax=ax, nodelist=[curr_node], node_color=YELLOW_NODE_COLOR)
         nx.draw_networkx_labels(res, pos, ax=ax)
-
-        # new_node_attributes = {node: excess[node] for node in res_nodes}
-        # nx.draw_networkx_labels(res, {n:[pos[n][0]-0.05, pos[n][1]+0.05] for n in res_nodes}, labels=new_node_attributes, ax=ax, horizontalalignment='right')
-        # nx.set_node_attributes(res, new_node_attributes)
-
-        # outlines = [plt.Circle(pos[node], 0.01+0.02*len(G.nodes()), color='black') for node in res_nodes]
-        
-        # for p in outlines:
-        #     ax.add_patch(p)
 
         labelax.cla()
         labelax.set_title('Heights')
@@ -485,20 +454,14 @@ def preflow_push_visualize(G, s, t, ev):
             label_pos[n] = [x, label_pos[n][1]]
             x += increment
 
-        nx.draw_networkx_nodes(label_G, pos=label_pos, ax=labelax, node_color=DEFAULT_NODE_COLOR, node_size=1200/len(res_nodes))
+        nx.draw_networkx_nodes(label_G, pos=label_pos, ax=labelax, node_color=BLUE_NODE_COLOR, node_size=1200/len(res_nodes))
         nx.draw_networkx_labels(label_G, pos=label_pos, ax=labelax, font_size=70/len(res_nodes))
-        
         draw_network_edges(label_G, Gpos=label_pos, ax=labelax, label=False)
-
-        # nx.draw_networkx_edges(label_G, label_pos, ax=labelax, edgelist=res_edges)
-        # print(pos)
-        # print(label_pos)
 
         excessax.cla()
         excessax.axis('off')
-        excessax.text(0, 0.5, 'excess: '+str({node: excess[node] for node in res_nodes}), fontsize=16)
-        excessax.text(0, -0.3, 'height: '+str({node: height[node] for node in res_nodes}), fontsize=16)
-        # excessax.text(0, -0.3, 'delay: '+str(animation_delay), fontsize=10)
+        excessax.text(0, 0.5, 'excess: '+str({node: excess[node] for node in res_nodes}), fontsize=14)
+        excessax.text(0, -0.3, 'height: '+str({node: height[node] for node in res_nodes}), fontsize=14)
         draw_network_edges(res, ax=ax, Gpos=pos, label_size=8)
 
     global is_running, is_paused, animation_delay
@@ -583,7 +546,6 @@ def preflow_push_visualize(G, s, t, ev):
         height[v] += 1
         animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
         relabeling_nodes.remove(v)
-        # animate_frame()
 
     # print("Heights:", height)
     # print("Capacity:", capacity)
@@ -592,34 +554,28 @@ def preflow_push_visualize(G, s, t, ev):
 
     # excess[v] = flow[into v] - flow[out of v]
     r = [v for (v, ex) in excess.items() if ex > 0 and v != s and v != t]
-    # i = 0
     while len(r) > 0:
         if ev.is_set() or is_running == False:
             excessax.cla()
             return
-        # print(excess)
         v = r.pop(0)
         
         curr_node = v
         v_edges = [e for e in push_edges if e[0] == v and height[v] > height[e[1]]]
-        # print(v_edges)
         pushed_flow = False
         visited = False
         for e in v_edges:
             if excess[v] == 0:
                 break
             w = e[1]
-            # print(e, "-", str(flow[e]) + "/" + str(capacity[e]), "| height[v] = " + str(height[v]) + " - height[w] = " + str(height[w]))
-            # if (height[v] == height[w] + 1 or height[v] == height[w]) and flow[e] < capacity[e]:
             if height[v] == height[w] + 1 and flow[e] < capacity[e]:
                 pushing_nodes.append(w)
                 reversed_edge = tuple(reversed(e))
                 max_possible = min(excess[v], capacity[e] - flow[e] if e in forward_edges else -flow[e])
+                
                 # print("> Pushed", max_possible, "flow through", e, "("+(str(capacity[e])+"-"+str(flow[e]) if e in forward_edges else str(-flow[e])) +")")
                 # print("Flow", e, "=", flow[e], "| Flow", reversed_edge, "=", flow[reversed_edge])
                 # print("Excess", v, "=", excess[v], "| Excess", w, "=", excess[w])
-                # flow[tuple(reversed(e))] += max_possible
-                # flow[e] = capacity[e] - flow[tuple(reversed(e))]
 
                 flow[e] += max_possible
                 flow[reversed_edge] -= max_possible
@@ -640,6 +596,7 @@ def preflow_push_visualize(G, s, t, ev):
 
                 if excess[w] > 0 and w != t and w not in r:
                     r.append(w)
+
                 # print("New flow", e, "=", flow[e], "| New flow", reversed_edge, "=", flow[reversed_edge])
                 # print("New excess", v, "=", excess[v], "| New excess", w, "=", excess[w])
                 
@@ -647,7 +604,6 @@ def preflow_push_visualize(G, s, t, ev):
                 animate_frame(wait=animation_delay, pre_animate=update, ax=ax)
                 pushing_nodes.remove(w)
                 visited = True
-        # if len(r) == 0 and v != t and excess[v] > 0:
         if len(r) == 0:
             r = [v for (v, ex) in excess.items() if ex > 0 and v != s and v != t]
             if len(r) == 0:
@@ -656,53 +612,36 @@ def preflow_push_visualize(G, s, t, ev):
             curr_node = v
             relabel(v)
             r.insert(0, v)
-            visited = True
             # print("Relabeling", v, "to height", height[v])
-        
-        # if visited == False:
-        #    r.insert(len(r), v)
-
-        # print(r)
-        # print("Heights:", height)
-        # print("Capacity:", capacity)
-        # print("Flow:", flow)
-        # print("Excess:", excess)
-        # r = 
-        # i += 1
-    
-    print(r)
 
     print("Heights:", height)
     print("Capacity:", capacity)
     print("Flow:", flow)
     print("Excess:", excess)
 
-    # new_edge_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
-    # netax.cla()
-    # netax.set_title('Original Network G')   
-    # nx.draw_networkx(G, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
-    # nx.set_edge_attributes(G, new_edge_attributes)
-    # draw_network_edges(G, ax=netax, label_size=8)
-
     print("Algorithm Complete")
 
-    # animate_frame(wait=0, pre_animate=update, ax=ax)
     is_running = False
 
     ax.cla()
     new_edge_attributes = {edge: {"capacity": capacity[edge], "flow": flow[edge]} for edge in res_edges}
     ax.set_title('Maximum Flow Graph')   
-    nx.draw_networkx(G, pos=pos, ax=ax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+    nx.draw_networkx(G, pos=pos, ax=ax, node_color=BLUE_NODE_COLOR, node_size=320)
     nx.set_edge_attributes(G, new_edge_attributes)
     draw_network_edges(G, ax=ax, Gpos=pos, label_size=8)
     plt.draw()
 
+
+# Draw the networkx preflow_push implementation on the right
+#
+# netax.set_title("Networkx Preflow_Push")
 # pfp = preflow_push(G, 's', 't')
-# nx.draw_networkx_nodes(pfp, pos=pos, ax=netax, node_color=DEFAULT_NODE_COLOR, node_size=320)
+# nx.draw_networkx_nodes(pfp, pos=pos, ax=netax, node_color=BLUE_NODE_COLOR, node_size=320)
 # nx.draw_networkx_labels(pfp, pos=pos, ax=netax)
 # draw_network_edges(pfp, ax=netax, zero=False, label_size=8)
 
-menu_start_x = 0.4
+menu_start_x = 0.01
+
 axrun = fig.add_axes([menu_start_x, 0.1, 0.1, 0.075])
 axreset = fig.add_axes([menu_start_x+0.11, 0.1, 0.1, 0.075])
 axpause = fig.add_axes([menu_start_x+0.22, 0.1, 0.1, 0.075])
@@ -710,10 +649,8 @@ axex1 = fig.add_axes([menu_start_x, 0.03, 0.025, 0.05])
 axex2 = fig.add_axes([menu_start_x+0.03, 0.03, 0.025, 0.05])
 axex3 = fig.add_axes([menu_start_x+0.03*2, 0.03, 0.025, 0.05])
 axex4 = fig.add_axes([menu_start_x+0.03*3, 0.03, 0.025, 0.05])
-# axrun = fig.add_axes([menu_start_x+0.44, 0.1, 0.1, 0.075])
-# axreset = fig.add_axes([menu_start_x+0.33, 0.1, 0.1, 0.075])
-# axstep = fig.add_axes([menu_start_x+0.22, 0.1, 0.1, 0.075])
-axbox = fig.add_axes([menu_start_x+0.44, 0.1, 0.1, 0.075])
+axbox = fig.add_axes([menu_start_x+0.33, 0.1, 0.05, 0.075])
+
 brun = widget.Button(axrun, 'Run')
 breset = widget.Button(axreset, 'Reset')
 bpause = widget.Button(axpause, 'Pause')
@@ -721,8 +658,9 @@ bex1 = widget.Button(axex1, 'Ex1')
 bex2 = widget.Button(axex2, 'Ex2')
 bex3 = widget.Button(axex3, 'Ex3')
 bex4 = widget.Button(axex4, 'Ex4')
-# bstep = widget.Button(axstep, 'Step')
-text_delay = widget.TextBox(axbox, "Delay", initial=animation_delay)
+
+text_delay = widget.TextBox(axbox, "", initial=animation_delay, textalignment="center")
+axbox.text(0.5, -0.5, "Delay", horizontalalignment="center")
 
 breset.on_clicked(reset)
 brun.on_clicked(run)
@@ -732,4 +670,5 @@ bex1.on_clicked(set_example1)
 bex2.on_clicked(set_example2)
 bex3.on_clicked(set_example3)
 bex4.on_clicked(set_example4)
+
 plt.show()
