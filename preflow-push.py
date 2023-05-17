@@ -302,13 +302,13 @@ def set_example3(event):
     if is_running:
         return
     global G, pos, ax, netax, edges, res
-    edges = [('s', 1, {"capacity": 23}), ('s', 2, {"capacity": 12}), (1, 2, {"capacity": 10}), (1, 't', {"capacity": 19}),
-            (2, 4, {"capacity": 3}), (3, 4, {"capacity": 14}), (4, 1, {"capacity": 6}), (5, 3, {"capacity": 28}), (1, 5, {"capacity": 4})]
+    edges = [('s', 1, {"capacity": 15}), ('s', 2, {"capacity": 12}), (2, 1, {"capacity": 10}), (1, 't', {"capacity": 19}),
+            (2, 4, {"capacity": 3}), (3, 4, {"capacity": 14}), (4, 1, {"capacity": 6}), (5, 3, {"capacity": 28}), (1, 5, {"capacity": 4}), (5, 't', {"capacity": 7})]
     G = nx.DiGraph()
     G.add_nodes_from(['s', 't'])
     G.add_edges_from(edges)
     res = build_residual_network(G, capacity='capacity')
-    pos = nx.spring_layout(res, seed=46585)
+    pos = nx.spring_layout(res, seed=465810)
     
     ax.cla()
     netax.cla()
